@@ -40,7 +40,14 @@ log "memory limit ${mb} MB; JVM: ${JVM_MEM}"
 
 APP_PROPS="-Dgrails.env=docker -Dstreama.rememberMeKeyFile=$DATA/streama-remember-me.key -Dserver.tomcat.max-threads=$TOMCAT_THREADS -Dfile.encoding=UTF-8 -Djava.security.egd=file:/dev/./urandom"
 # shellcheck disable=SC2086
-run_java() { java $JVM_MEM -XX:+ExitOnOutOfMemoryError $APP_PROPS ${JAVA_OPTS:-} "$@" -jar "$JAR"; }
+run_java() { exec java $JVM_MEM -XX:+ExitOnOutOfMemoryError $APP_PROPS ${JAVA_OPTS:-} "$@" -jar "$JAR"; }
+# Stop the first-boot JVM and wait until it has exited, so it releases the H2 database file.
+stop_java() {
+  kill "$pid" 2>/dev/null || true
+  n=0; while kill -0 "$pid" 2>/dev/null && [ $n -lt 60 ]; do sleep 1; n=$((n+1)); done
+  kill -9 "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
 
 # ---- First boot: secure the admin account before the public port opens ----
 # Railway can start two deployments at once on a new service; only one may run the first boot.
@@ -52,7 +59,8 @@ if [ ! -f "$MARKER" ]; then
   fi
   IPORT=18080
   log "first boot: starting Streama on 127.0.0.1:$IPORT to set the admin password"
-  run_java -Dserver.address=127.0.0.1 -Dserver.port=$IPORT &
+  # Subshell + exec: $pid is the JVM itself, not a wrapper shell.
+  ( run_java -Dserver.address=127.0.0.1 -Dserver.port=$IPORT ) &
   pid=$!
   ok=""
   i=0
@@ -61,7 +69,7 @@ if [ ! -f "$MARKER" ]; then
     if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$IPORT/login/auth")" = 200 ]; then ok=1; break; fi
     sleep 1; i=$((i+1))
   done
-  [ -n "$ok" ] || { log "Streama did not answer within 600 s"; kill "$pid"; exit 1; }
+  [ -n "$ok" ] || { log "Streama did not answer within 600 s"; stop_java; exit 1; }
 
   B="http://127.0.0.1:$IPORT"
   CJ=$(mktemp)
@@ -73,14 +81,14 @@ if [ ! -f "$MARKER" ]; then
   if login admin; then
     body=$(jq -n --arg p "$ADMIN_PASSWORD" '{oldPassword:"admin",newPassword:$p,repeatPassword:$p}')
     code=$(curl -s -b "$CJ" -c "$CJ" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$body" "$B/user/changePassword.json")
-    [ "$code" = 202 ] || { log "changing the admin password failed (HTTP $code)"; kill "$pid"; exit 1; }
-    login "$ADMIN_PASSWORD" || { log "login with the new admin password failed"; kill "$pid"; exit 1; }
+    [ "$code" = 202 ] || { log "changing the admin password failed (HTTP $code)"; stop_java; exit 1; }
+    login "$ADMIN_PASSWORD" || { log "login with the new admin password failed"; stop_java; exit 1; }
     log "admin password set from ADMIN_PASSWORD"
   elif login "$ADMIN_PASSWORD"; then
     log "admin password was already set"
   else
     log "admin login failed with both the default and ADMIN_PASSWORD; leaving the account as it is"
-    kill "$pid"; wait "$pid" 2>/dev/null || true; exit 1
+    stop_java; exit 1
   fi
 
   # Preset the settings Streama asks for on first login: upload directory on the volume, and the base URL.
@@ -97,7 +105,7 @@ if [ ! -f "$MARKER" ]; then
   rm -f "$CJ"
 
   touch "$MARKER"
-  kill "$pid"; wait "$pid" 2>/dev/null || true
+  stop_java
   log "first boot done; starting on the public port"
 fi
 exec 9>&-
