@@ -28,7 +28,12 @@ if [ "$mb" -gt 0 ] && [ "$mb" -le 800 ]; then
   JVM_MEM="-Xmx200m -Xms64m -Xss256k -XX:MaxMetaspaceSize=128m -XX:CompressedClassSpaceSize=32m -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:CICompilerCount=1"
   TOMCAT_THREADS=20
 else
-  JVM_MEM="-XX:MaxRAMPercentage=60 -XX:+UseSerialGC"
+  # Larger plan: half the limit for the heap, between 256 MB and 1536 MB (Streama needs little heap;
+  # the rest is left for metaspace, threads and the OS file cache for streaming). No limit: 512 MB.
+  if [ "$mb" -gt 0 ]; then heap=$((mb / 2)); else heap=512; fi
+  [ "$heap" -gt 1536 ] && heap=1536
+  [ "$heap" -lt 256 ] && heap=256
+  JVM_MEM="-Xmx${heap}m -Xms64m -XX:MaxMetaspaceSize=256m -XX:+UseSerialGC"
   TOMCAT_THREADS=100
 fi
 log "memory limit ${mb} MB; JVM: ${JVM_MEM}"
@@ -38,6 +43,9 @@ APP_PROPS="-Dgrails.env=docker -Dstreama.rememberMeKeyFile=$DATA/streama-remembe
 run_java() { java $JVM_MEM -XX:+ExitOnOutOfMemoryError $APP_PROPS ${JAVA_OPTS:-} "$@" -jar "$JAR"; }
 
 # ---- First boot: secure the admin account before the public port opens ----
+# Railway can start two deployments at once on a new service; only one may run the first boot.
+exec 9>"$DATA/.first-boot.lock"
+flock -w 900 9 || { log "could not get the first-boot lock"; exit 1; }
 if [ ! -f "$MARKER" ]; then
   if [ -z "${ADMIN_PASSWORD:-}" ] || [ "${#ADMIN_PASSWORD}" -lt 6 ]; then
     log "ADMIN_PASSWORD must be set (at least 6 characters) for the first start"; exit 1
@@ -92,6 +100,7 @@ if [ ! -f "$MARKER" ]; then
   kill "$pid"; wait "$pid" 2>/dev/null || true
   log "first boot done; starting on the public port"
 fi
+exec 9>&-
 
 log "starting Streama on 0.0.0.0:$PORT"
 # exec so Streama's exit code is the container's: a crash or OOM exits non-zero and Railway restarts it.

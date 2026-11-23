@@ -34,7 +34,7 @@ Upstream Streama creates the user `admin` with the password `admin` on first sta
 
 ## Memory
 
-`start.sh` reads the container's memory limit. At 800 MB or less (for example Railway's 0.5 GB Free/Trial services) it runs the JVM with a 200 MB heap and a small metaspace, code cache and thread pool; Streama then uses about 350–400 MB. With more memory it uses 60% of the limit for the heap. If the JVM runs out of memory it exits non-zero, so Railway restarts it. Set `JAVA_OPTS` to add your own JVM flags.
+`start.sh` reads the container's memory limit. At 800 MB or less (for example Railway's 0.5 GB Free/Trial services) it runs the JVM with a 200 MB heap and a small metaspace, code cache and thread pool; Streama then uses about 350–400 MB. With more memory the heap is half the limit, capped at 1.5 GB. If the JVM runs out of memory it exits non-zero, so Railway restarts it. Set `JAVA_OPTS` to add your own JVM flags.
 
 ## Optional features
 
