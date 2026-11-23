@@ -45,8 +45,9 @@ run_java() { exec java $JVM_MEM -XX:+ExitOnOutOfMemoryError $APP_PROPS ${JAVA_OP
 stop_java() {
   kill "$pid" 2>/dev/null || true
   n=0; while kill -0 "$pid" 2>/dev/null && [ $n -lt 60 ]; do sleep 1; n=$((n+1)); done
-  kill -9 "$pid" 2>/dev/null || true
+  if kill -0 "$pid" 2>/dev/null; then log "first-boot JVM did not stop in 60 s; killing it"; kill -9 "$pid" 2>/dev/null || true; fi
   wait "$pid" 2>/dev/null || true
+  log "first-boot JVM stopped after ${n} s"
 }
 
 # ---- First boot: secure the admin account before the public port opens ----
@@ -102,7 +103,12 @@ if [ ! -f "$MARKER" ]; then
     code=$(curl -s -b "$CJ" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$upd" "$B/settings/updateMultiple.json")
     log "preset settings (upload directory, base URL): HTTP $code"
   fi
+  # H2 writes to disk with a short delay: read the settings back, then give it time to flush
+  # before stopping the JVM, so the presets are not lost.
+  up_now=$(curl -s -b "$CJ" "$B/settings/index.json" | jq -r '.[] | select(.settingsKey=="Upload Directory") | .value // ""')
+  [ "$up_now" = "$DATA/media" ] || { log "upload directory setting did not stick (got '$up_now')"; stop_java; exit 1; }
   rm -f "$CJ"
+  sleep 5
 
   touch "$MARKER"
   stop_java
